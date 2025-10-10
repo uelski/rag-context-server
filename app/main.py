@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Depends, Request, Body
 from pathlib import Path
 import os
 import time
@@ -7,17 +7,66 @@ from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
 import pymupdf
 from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
+from uuid import uuid4
+
 
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
+
+APP_COOKIE = "sid"
+
+def gen_sid() -> str:
+    return uuid4().hex  # opaque, unguessable
+
+class AnonSessionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        sid = request.cookies.get(APP_COOKIE) or gen_sid()
+        # expose to handlers
+        request.state.session_id = sid
+        # run downstream
+        response = await call_next(request)
+        # (re)issue cookie if missing
+        if not request.cookies.get(APP_COOKIE):
+            response.set_cookie(
+                key=APP_COOKIE,
+                value=sid,
+                httponly=True,
+                secure=True,                 # set False for local HTTP if needed
+                samesite="lax",
+                max_age=60 * 60 * 24 * 7,   # 7 days
+                path="/",
+            )
+        return response
+
+# ---- OpenAI, Pinecone, etc.
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "rag-demo")
 
 app = FastAPI(title="RAG Server")
+app.add_middleware(AnonSessionMiddleware)
+
+# CORS (important: allow credentials)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # your Vite dev
+        "https://your-frontend.example.com",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def get_session_id(request: Request) -> str:
+    # middleware put it here
+    return request.state.session_id
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -99,7 +148,7 @@ def embed_texts(texts: list[str], model: str = "text-embedding-3-small", batch_s
         time.sleep(0.05)
     return vecs
 
-def upsert_chunks(chunks: list[dict], vectors: list[list[float]], doc_id: str):
+def upsert_chunks(chunks: list[dict], vectors: list[list[float]], doc_id: str, namespace: str | None = None):
     # Pinecone expects a list of dicts with id, values, metadata
     items = []
     for ch, vec in zip(chunks, vectors):
@@ -114,7 +163,7 @@ def upsert_chunks(chunks: list[dict], vectors: list[list[float]], doc_id: str):
             }
         })
     # Batch upsert (Pinecone SDK handles chunking internally too)
-    index.upsert(items)
+    index.upsert(vectors=items, namespace=namespace)
 
 # --- reuse OpenAI client, index, etc. from above
 
@@ -122,7 +171,7 @@ def embed_query(query: str, model: str = "text-embedding-3-small") -> list[float
     resp = client.embeddings.create(model=model, input=[query])
     return resp.data[0].embedding
 
-def search_chunks(q_vec: list[float], top_k: int = 5, doc_id: str | None = None):
+def search_chunks(q_vec: list[float], top_k: int = 5, doc_id: str | None = None, namespace: str | None = None):
     filt = {"doc_id": {"$eq": doc_id}} if doc_id else None
     res = index.query(
         vector=q_vec,
@@ -130,6 +179,7 @@ def search_chunks(q_vec: list[float], top_k: int = 5, doc_id: str | None = None)
         include_metadata=True,
         include_values=False,
         filter=filt,
+        namespace=namespace,
     )
     # Pinecone v5 returns res.matches (list)
     out = []
@@ -155,7 +205,7 @@ def health():
 
 # basic post endpoint to read pdf and chunk it
 @app.post("/test_read_pdf")
-def test_read_pdf():
+def test_read_pdf(sid: str = Depends(get_session_id)):
     """
     Ingest a local test.pdf located next to this main.py file:
     parse -> chunk -> embed -> upsert
@@ -168,7 +218,7 @@ def test_read_pdf():
     chunks = chunk_pages(pages, max_tokens=500, overlap=60)
     vecs = embed_texts([c["text"] for c in chunks])
     doc_id = f"doc_{pdf_path.stem}"
-    upsert_chunks(chunks, vecs, doc_id=doc_id)
+    upsert_chunks(chunks, vecs, doc_id=doc_id, namespace=sid)
 
     return {
         "file": str(pdf_path.name),
@@ -184,7 +234,7 @@ class QueryRequest(BaseModel):
     doc_id: str | None = None
 
 @app.post("/search_documents")
-def search_documents(req: QueryRequest):
+def search_documents(req: QueryRequest, sid: str = Depends(get_session_id)):
     q_vec = embed_query(req.q)
-    hits = search_chunks(q_vec, top_k=req.k or 5, doc_id=req.doc_id)
+    hits = search_chunks(q_vec, top_k=req.k or 5, doc_id=req.doc_id, namespace=sid)
     return {"query": req.q, "top_k": req.k or 5, "results": hits}
