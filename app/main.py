@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Depends, Request, Body
+from fastapi import FastAPI, UploadFile, File, Depends, Request, Body, HTTPException
 from pathlib import Path
 import os
 import time
@@ -204,27 +204,49 @@ def health():
     return {"status": "ok"}
 
 # basic post endpoint to read pdf and chunk it
-@app.post("/test_read_pdf")
-def test_read_pdf(sid: str = Depends(get_session_id)):
+@app.post("/upload_document")
+async def upload_document(sid: str = Depends(get_session_id), file: UploadFile = File(...)):
     """
     Ingest a local test.pdf located next to this main.py file:
     parse -> chunk -> embed -> upsert
     """
-    pdf_path = Path(__file__).parent / "kandinsky.pdf"
-    if not pdf_path.exists():
-        return {"error": f"test.pdf not found at {pdf_path}"}
+    # 1) read file content
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file upload.")
 
-    pages = parse_pdf(pdf_path)
+    # 2) parse -> chunk -> embed
+    # Make sure parse_pdf accepts bytes (or adapt accordingly)
+    pages = parse_pdf(raw)                   # returns list[str] or similar
+    if not pages:
+        raise HTTPException(status_code=400, detail="No text extracted from file.")
+
     chunks = chunk_pages(pages, max_tokens=500, overlap=60)
-    vecs = embed_texts([c["text"] for c in chunks])
-    doc_id = f"doc_{pdf_path.stem}"
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No chunks produced from document.")
+
+    vecs = embed_texts([c["text"] for c in chunks])   # must match your index dimension (e.g., 1536)
+
+    # 3) build a doc_id and (optionally) enrich metadata
+    doc_id = f"doc_{file.filename}"
+    for i, c in enumerate(chunks):
+        c.setdefault("metadata", {})
+        c["metadata"].update({
+            "user_id": sid,                # optional but useful
+            "filename": file.filename or "",
+            "doc_id": doc_id,
+            "chunk_index": i,
+        })
+
+    # 4) upsert to Pinecone scoped to this user's namespace
     upsert_chunks(chunks, vecs, doc_id=doc_id, namespace=sid)
 
     return {
-        "file": str(pdf_path.name),
+        "file": str(file.filename),
         "pages_parsed": len(pages),
         "chunks_upserted": len(chunks),
         "index": PINECONE_INDEX,
+        "namespace": sid,
         "doc_id": doc_id,
     }
 
@@ -233,8 +255,19 @@ class QueryRequest(BaseModel):
     k: int | None = 5
     doc_id: str | None = None
 
+def has_vectors(sid: str = Depends(get_session_id)):
+    stats = index.describe_index_stats()
+    ns = stats.get("namespaces", {}).get(sid, {})
+    count = int(ns.get("vectorCount", 0))
+    return {"has_any": count > 0, "count": count}
+
 @app.post("/search_documents")
-def search_documents(req: QueryRequest, sid: str = Depends(get_session_id)):
+def search_documents(req: QueryRequest, sid: str = Depends(get_session_id), vecstat: dict = Depends(has_vectors)):
+    if not vecstat["has_any"]:
+        return JSONResponse(
+            {"results": [], "info": "No uploads found for this session.", "count": 0},
+            status_code=200
+        )
     q_vec = embed_query(req.q)
     hits = search_chunks(q_vec, top_k=req.k or 5, doc_id=req.doc_id, namespace=sid)
     return {"query": req.q, "top_k": req.k or 5, "results": hits}
