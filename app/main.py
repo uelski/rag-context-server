@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from uuid import uuid4
 from gcs_manifest import add_upload, list_uploads
+from rag_llm import generate_answer_from_matches
 
 
 from dotenv import load_dotenv
@@ -262,6 +263,12 @@ def has_vectors(sid: str = Depends(get_session_id)):
     count = int(ns.get("vectorCount", 0))
     return {"has_any": count > 0, "count": count}
 
+def retrieve_matches(namespace: str, query: str, top_k: int, doc_id: str | None = None) -> list[dict[str, any]]:
+    q_vec = embed_query(query)  # your existing function
+    hits = search_chunks(q_vec, top_k=top_k, doc_id=doc_id, namespace=namespace)  # your existing function
+    # Ensure each hit includes metadata.text/source/page for rag_llm
+    return hits
+
 @app.post("/search_documents")
 def search_documents(req: QueryRequest, sid: str = Depends(get_session_id), vecstat: dict = Depends(has_vectors)):
     if not vecstat["has_any"]:
@@ -269,9 +276,30 @@ def search_documents(req: QueryRequest, sid: str = Depends(get_session_id), vecs
             {"results": [], "info": "No uploads found for this session.", "count": 0},
             status_code=200
         )
-    q_vec = embed_query(req.q)
-    hits = search_chunks(q_vec, top_k=req.k or 5, doc_id=req.doc_id, namespace=sid)
+    hits = retrieve_matches(sid, req.q, req.k or 5, req.doc_id)
     return {"query": req.q, "top_k": req.k or 5, "results": hits}
+
+class QueryDocumentsIn(BaseModel):
+    query: str
+    top_k: int = 6
+    model: str | None = None
+    doc_id: str | None = None
+
+class QueryDocumentsOut(BaseModel):
+    answer: str
+    citations: list[dict]
+
+@app.post("/query_documents", response_model=QueryDocumentsOut)
+def query_documents(
+    body: QueryDocumentsIn,
+    sid: str = Depends(get_session_id),
+    vecstat: dict = Depends(has_vectors)
+):
+    if not vecstat["has_any"]:
+        return QueryDocumentsOut(answer="No uploads found for this session.", citations=[])
+    matches = retrieve_matches(namespace=sid, query=body.query, top_k=body.top_k, doc_id=body.doc_id)
+    result = generate_answer_from_matches(question=body.query, matches=matches, model=body.model)
+    return QueryDocumentsOut(answer=result["answer"], citations=result["citations"])
 
 @app.get("/uploads")
 def get_uploads(sid: str = Depends(get_session_id)):
