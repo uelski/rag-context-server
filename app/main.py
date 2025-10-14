@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from uuid import uuid4
+from gcs_manifest import add_upload, list_uploads
 
 
 from dotenv import load_dotenv
@@ -240,7 +241,7 @@ async def upload_document(sid: str = Depends(get_session_id), file: UploadFile =
 
     # 4) upsert to Pinecone scoped to this user's namespace
     upsert_chunks(chunks, vecs, doc_id=doc_id, namespace=sid)
-
+    add_upload(sid, doc_id, file.filename, len(raw), len(pages), len(chunks))
     return {
         "file": str(file.filename),
         "pages_parsed": len(pages),
@@ -271,3 +272,7 @@ def search_documents(req: QueryRequest, sid: str = Depends(get_session_id), vecs
     q_vec = embed_query(req.q)
     hits = search_chunks(q_vec, top_k=req.k or 5, doc_id=req.doc_id, namespace=sid)
     return {"query": req.q, "top_k": req.k or 5, "results": hits}
+
+@app.get("/uploads")
+def get_uploads(sid: str = Depends(get_session_id)):
+    return list_uploads(sid)
