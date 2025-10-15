@@ -13,7 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from uuid import uuid4
 from gcs_manifest import add_upload, list_uploads
-from rag_llm import generate_answer_from_matches
+from .rag_llm import generate_answer_from_matches
 
 
 from dotenv import load_dotenv

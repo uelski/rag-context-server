@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _BUCKET = os.getenv("GCS_BUCKET")
-_client = storage.Client()
+_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+_client = storage.Client(project=_PROJECT_ID)
 _bucket = _client.bucket(_BUCKET)
 
 def _blob_for_sid(sid: str):

@@ -12,3 +12,4 @@ pymupdf
 tiktoken
 openai
 google-cloud-storage
+python-multipart
