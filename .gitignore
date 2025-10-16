@@ -1,5 +1,4 @@
-.venv/
-.rag-env/
+.rvenv/
 .env
 __pycache__/
 kandinsky.pdf
