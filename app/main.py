@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Depends, Request, Body, HTTPException
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 import os
 import time
 import tiktoken
@@ -14,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from uuid import uuid4
 from gcs_manifest import add_upload, list_uploads
 from .rag_llm import generate_answer_from_matches
-
+import shutil
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -52,19 +53,20 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX", "rag-demo")
 
 app = FastAPI(title="RAG Server")
-app.add_middleware(AnonSessionMiddleware)
 
 # CORS (important: allow credentials)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",  # your Vite dev
-        "https://your-frontend.example.com",
+        "http://127.0.0.1:5173",
     ],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(AnonSessionMiddleware)
 
 def get_session_id(request: Request) -> str:
     # middleware put it here
@@ -84,14 +86,24 @@ if PINECONE_INDEX not in existing:
     )
 index = pc.Index(PINECONE_INDEX)
 
-def parse_pdf(path: Path) -> list[dict]:
+def parse_pdf(file: UploadFile) -> list[dict]:
     """Return [{'page': int, 'text': str}, ...]"""
-    pages = []
-    doc = pymupdf.open(path)
-    for i, page in enumerate(doc):
-        text = page.get_text("text")
-        if text and text.strip():
-            pages.append({"page": i + 1, "text": text.strip()})
+    with NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+        # copy in chunks from the underlying sync file object
+        file.file.seek(0)
+        shutil.copyfileobj(file.file, tmp)   # zero extra buffering in Python
+        tmp.flush()
+
+        # Open by path
+        doc = pymupdf.open(tmp.name)
+        try:
+            pages = []
+            for i, page in enumerate(doc):
+                txt = (page.get_text("text") or "").strip()
+                if txt:
+                    pages.append({"page": i + 1, "text": txt})
+        finally:
+            doc.close()
     return pages
 
 def chunk_pages(pages: list[dict], max_tokens: int = 500, overlap: int = 60) -> list[dict]:
@@ -214,15 +226,16 @@ async def upload_document(sid: str = Depends(get_session_id), file: UploadFile =
     """
     # 1) read file content
     raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Empty file upload.")
+    if not file.filename:
+        raise HTTPException(400, "No file")
 
     # 2) parse -> chunk -> embed
     # Make sure parse_pdf accepts bytes (or adapt accordingly)
-    pages = parse_pdf(raw)                   # returns list[str] or similar
+    pages = parse_pdf(file) 
+        
     if not pages:
         raise HTTPException(status_code=400, detail="No text extracted from file.")
-
+    
     chunks = chunk_pages(pages, max_tokens=500, overlap=60)
     if not chunks:
         raise HTTPException(status_code=400, detail="No chunks produced from document.")
