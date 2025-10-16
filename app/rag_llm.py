@@ -198,7 +198,7 @@ def generate_answer_from_matches(
             if idx_end > 1:
                 idx = int(line[1:idx_end])
                 label = line[idx_end+2:]
-                citations.append({"index": idx, "label": label})
+                citations.append(label)
 
     return {
         "answer": answer_text.strip(),

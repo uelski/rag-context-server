@@ -61,7 +61,7 @@ app.add_middleware(
         "http://localhost:5173",  # your Vite dev
         "http://127.0.0.1:5173",
     ],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -273,7 +273,7 @@ class QueryRequest(BaseModel):
 def has_vectors(sid: str = Depends(get_session_id)):
     stats = index.describe_index_stats()
     ns = stats.get("namespaces", {}).get(sid, {})
-    count = int(ns.get("vectorCount", 0))
+    count = int(ns.get("vector_count", 0))
     return {"has_any": count > 0, "count": count}
 
 def retrieve_matches(namespace: str, query: str, top_k: int, doc_id: str | None = None) -> list[dict[str, any]]:
@@ -300,7 +300,7 @@ class QueryDocumentsIn(BaseModel):
 
 class QueryDocumentsOut(BaseModel):
     answer: str
-    citations: list[dict]
+    citations: list[str]
 
 @app.post("/query_documents", response_model=QueryDocumentsOut)
 def query_documents(
@@ -308,6 +308,7 @@ def query_documents(
     sid: str = Depends(get_session_id),
     vecstat: dict = Depends(has_vectors)
 ):
+    print(f"query_documents: {body}")
     if not vecstat["has_any"]:
         return QueryDocumentsOut(answer="No uploads found for this session.", citations=[])
     matches = retrieve_matches(namespace=sid, query=body.query, top_k=body.top_k, doc_id=body.doc_id)
