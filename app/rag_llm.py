@@ -54,7 +54,7 @@ def _format_source_labels(matches: List[Dict[str, Any]]) -> str:
     labels: Dict[str, Dict[str, Any]] = {}
     for m in matches:
         md = m.get("metadata", {})
-        source = md.get("source") or md.get("filename") or "Unknown source"
+        source = md.get("filename") or md.get("doc_id") or "Unknown source"
         page = md.get("page")
         url = md.get("url")
         # Use a stable key per "source" (and url if present)
@@ -90,7 +90,7 @@ def _map_matches_to_sources(matches: List[Dict[str, Any]]) -> Dict[str, int]:
     labels: Dict[str, None] = {}
     for m in matches:
         md = m.get("metadata", {})
-        source = md.get("source") or md.get("filename") or "Unknown source"
+        source = md.get("filename") or md.get("doc_id") or "Unknown source"
         url = md.get("url")
         key = f"{source}|{url or ''}"
         labels[key] = None
@@ -106,7 +106,7 @@ def _format_context(matches: List[Dict[str, Any]]) -> str:
     lines = []
     for m in matches:
         md = m.get("metadata", {})
-        source = md.get("source") or md.get("filename") or "Unknown source"
+        source = md.get("filename") or md.get("doc_id") or "Unknown source"
         url = md.get("url")
         key = f"{source}|{url or ''}"
         idx = source_index[key]

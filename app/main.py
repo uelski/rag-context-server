@@ -206,6 +206,7 @@ def search_chunks(q_vec: list[float], top_k: int = 5, doc_id: str | None = None,
             "page_start": md.get("page_start"),
             "page_end": md.get("page_end"),
             "doc_id": md.get("doc_id"),
+            "metadata": md,
         })
     return out
 
@@ -251,6 +252,7 @@ async def upload_document(sid: str = Depends(get_session_id), file: UploadFile =
             "filename": file.filename or "",
             "doc_id": doc_id,
             "chunk_index": i,
+            "filename": file.filename or "",
         })
 
     # 4) upsert to Pinecone scoped to this user's namespace
@@ -308,7 +310,6 @@ def query_documents(
     sid: str = Depends(get_session_id),
     vecstat: dict = Depends(has_vectors)
 ):
-    print(f"query_documents: {body}")
     if not vecstat["has_any"]:
         return QueryDocumentsOut(answer="No uploads found for this session.", citations=[])
     matches = retrieve_matches(namespace=sid, query=body.query, top_k=body.top_k, doc_id=body.doc_id)
