@@ -40,7 +40,7 @@ class AnonSessionMiddleware(BaseHTTPMiddleware):
                 value=sid,
                 httponly=True,
                 secure=True,                 # set False for local HTTP if needed
-                samesite="lax",
+                samesite="none",
                 max_age=60 * 60 * 24 * 7,   # 7 days
                 path="/",
             )
@@ -60,6 +60,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",  # your Vite dev
         "http://127.0.0.1:5173",
+        "https://uelski.dev",
+        "https://rag.uelski.dev",
     ],
     allow_credentials=True,
     allow_methods=["*"],
